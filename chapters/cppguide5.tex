@@ -1,0 +1,535 @@
+\chapter{C++的构建系统}
+
+C和C++虽然古老，但在今天的工业界，仍是重要的编程语言。工程上，最重要的问题是：如何管理依赖、如何构建项目。C和C++的包管理和构建系统一直是一个痛点，本章将介绍一些常用的包管理器和构建系统，帮助大家更好地进行C和C++的开发。
+
+实际上这是很正常的：如果文件一多，直接用 \verb|gcc| 来传参就变成一种折磨，如果有一个工具能够帮我们管理编译的过程，那么我们就可以专注于写代码，而不是管理编译的过程。
+
+由于能用得上这些部分的读者\textbf{肯定}都具有了相当的C++基础和其他计算机基础（比如安装一个指定的软件），所以我们不会提及如何安装这些构建软件，也不会提及如何使用这些构建软件的IDE插件。我们只会介绍这些构建软件的使用方法。
+
+\section{CMake}
+
+在2000年左右，CMake作为一个跨平台的构建工具被提出。它的主要目标是提供一个简单的方式来管理大型项目的构建过程。在当时，autotools难写，Makefile难以跨平台，而CMake“描述意图”代替“描述过程”，使得构建过程变得更简单。
+
+好风凭借力。随着CMake渐渐进入人们的视野，KDE、LLVM、OpenCV、Qt6、ROS2等项目全都开始使用CMake作为构建工具，社区生态空前繁荣，直接将CMake推上了构建工具的顶峰。直到现在，CMake依然是面向生产环境的“事实标准”，VS、CLion、QtCreator、VS Code全部将CMake作为一级公民，GH Actions、Docker、Conan、vcpkg无需装包，默认识别CMake项目。
+
+因此，不学会CMake，你在今日的开发世界中寸步难行：除非你愿意用Makefile这种玩意为每个IDE和平台写一大堆构建脚本！
+
+\subsection{最小运行实例}
+
+CMake的构建说明文件是 \verb|CMakeLists.txt|，它的语法非常简单，下面是两个最小的运行实例。
+
+\paragraph{单一文件} 现在有一个文件 \verb|main.cpp|，其中写了一个简单的 \verb|Hello World| 程序。在同一个目录下新建一个CMake构建说明文件，内容如下：
+\begin{minted}{cmake}
+cmake_minimum_required(VERSION 3.10)
+project(HelloWorld LANGUAGES CXX) # 声明项目名称和语言
+add_executable(hello main.cpp) # 声明可执行文件和源文件
+\end{minted}
+然后构建：
+\begin{minted}{bash}
+mkdir build
+cd build
+cmake ..
+make
+\end{minted}
+之后会在 \verb|build| 目录下生成一个可执行文件 \verb|hello|，运行它，就能看到相应的输出。
+
+\paragraph{多个文件} 现在有这样的一个目录结构：
+\begin{minted}{text}
+project/
+- main.cc
+- math/
+    - add.cc
+    - add.hh
+- io/
+    - print.cc
+    - print.hh
+\end{minted}
+其中 \verb|main.cc| 是主程序，\verb|math/add.cc| 和 \verb|io/print.cc| 是两个模块的实现文件，\verb|math/add.hh| 和 \verb|io/print.hh| 是两个模块的头文件。我们希望将 \verb|math| 和 \verb|io| 作为两个库来编译，然后再将它们链接到主程序中。我们可以在 \verb|project| 目录下新建一个CMake构建说明文件，内容如下：
+\begin{minted}{cmake}
+cmake_minimum_required(VERSION 3.10)
+project(MyProject LANGUAGES CXX)
+add_library(math math/add.cc) # 声明math库
+add_library(io io/print.cc) # 声明io库
+add_executable(main main.cc) # 声明可执行文件
+target_link_libraries(main PRIVATE math io) # 链接库到可执行文件
+\end{minted}
+然后构建：
+\begin{minted}{bash}
+mkdir build
+cd build
+cmake ..
+make
+\end{minted}
+之后会在 \verb|build| 目录下生成一个可执行文件 \verb|main|，运行它，就能看到相应的执行结果。
+
+\subsection{发生了什么？}
+
+这两个CMake的构建说明文件展示了CMake的基本用法。
+
+第一个实例展示了如何构建一个单一文件的项目：首先要声明CMake的最低接受版本要求，然后声明项目名称和语言（防止用C++编译器去编译C代码），最后声明可执行文件对应的源文件。
+
+第二个实例则稍微复杂一些，涉及到库的概念。在这里，我们声明了两个静态的库，分别对应 \verb|math/add.cc| 和 \verb|io/print.cc|，然后声明了一个可执行文件 \verb|main| 对应 \verb|main.cc|，最后将两个库链接到可执行文件中。
+
+当我们打开第二个构建实例的 \verb|build| 目录时会发现，对比第一个实例的对应目录，里面多了两个文件：\verb|libmath.a| 和 \verb|libio.a|，它们是\textbf{静态}的库文件，我们在先前也提到过。这些库会在链接一步（CMake的 \verb|target_link_libraries| 命令）中被链接到可执行文件中。
+
+由于它们是静态链接库，所以在运行时不需要依赖这些库文件，所有的代码都已经被打包到可执行文件中。我们如果要分发软件，只需要分发这个可执行文件即可，而不需要分发这些静态链接库文件\footnote{实际上，有时候还需链接 \mintinline{text}|libstdc++|、\mintinline{text}|glibc| 等库，需在CMake时加上 \mintinline{text}|-static-libstdc++ -static-libgcc| 参数，彻底静态链接这些库；也可以在CMake中对这些库的版本提出要求或检查，保证在运行时不会因为版本不匹配而出错。}。
+
+有时候，我们想写的是库而不是可执行文件。此时，有以下几种情况：
+\begin{itemize}
+    \item 单头文件库：所有的代码全集成在一个头文件中，用户只需要包含这个头文件即可使用库的功能。这个功能不需要CMake的参与。
+    \item 静态链接库：将代码编译成一个静态链接库。这时候需要CMake的参与：我们需要把源代码编译成静态链接库，并分发头文件和静态链接库文件给使用者。同时，我们需要告诉使用者，他们在编译自己的程序时，应该链接这个 \verb|.a| 文件。
+    \item 动态链接库：这种情况我们分发的是SDK。这时候，也需要分发库和头文件。此时的CMake更复杂一些：不仅需要编译，还需要给动态链接库带上版本号：
+    \begin{minted}{cmake}
+add_library(mylib SHARED mylib.cc) # 声明动态链接库
+set_target_properties(mylib PROPERTIES
+    VERSION 1.2.3 # 完整版本号
+    SOVERSION 1 # 主版本号，接口兼容性
+)
+    \end{minted}
+    一般的，主版本号发生变动的时候，就意味着接口发生了不兼容的变化，使用者需要重新编译自己的程序；而次版本号和修订号的变动，则意味着接口没有发生不兼容的变化，使用者可以继续使用原来的库文件。如此构建之后，会生成三个文件：
+    \begin{itemize}
+        \item \verb|libmylib.so.1.2.3|：完整版本号的动态链接库文件，供其他开发者使用。
+        \item \verb|libmylib.so.1|：一个指向上述真实文件的软链接，供运行时 \verb|ld.so| 使用。
+        \item \verb|libmylib.so|：一个指向上述真实文件的软链接，供本地编译时 \verb|ld| 使用。
+    \end{itemize}
+    要分发时，需要分发所有的文件，或者只分发 \verb|libmylib.so.1.2.3|，然后让使用者自己创建软链接。
+\end{itemize}
+
+实际上这个过程就是CMake控制构建的流程：它会根据构建说明文件，生成一个 \verb|Makefile|，然后调用 \verb|make| 来执行构建过程：将哪些源文件生成的目标文件链接成库或可执行文件，以及将哪些库链接到更高层的库或最终的可执行文件中。CMake的优势在于，它可以根据不同的平台和编译器，生成不同的构建文件，从而实现跨平台的构建：只要代码相同，就能构建出功能基本相同的可执行文件。
+
+至于下面的内容，都是怎样让CMake更好的工作。
+
+\subsection{让CMake更好地工作}
+
+\paragraph{目标和作用域} 在构建时，每一个 \verb|add_*| 实际上都是创建了一个“目标”。在链接目标的时候，CMake会根据目标的作用域来决定链接哪些库。
+
+目标的作用域分三种：
+\begin{itemize}
+    \item \verb|PRIVATE|：只在当前目标中可见，其他目标无法链接到它。
+    \item \verb|PUBLIC|：自己链接，下游目标也可以链接到它。
+    \item \verb|INTERFACE|：自己不链接，但给下游目标使用。
+\end{itemize}
+
+一般情况下，除非显式传递，否则子目录自动继承父目录的作用域；而对于一个特定目标，属性自动跟随，跨目录也能传递。
+
+\paragraph{变量、缓存变量} 我们知道，如果一个库（可执行文件）由多个源文件组成，那么可以这么写：
+\begin{minted}{cmake}
+add_library(mylib a.cc b.cc c.cc)
+\end{minted}
+但是如果源文件很多，写起来就很麻烦，这一行会大大膨胀。此时，我们可以使用变量来存储源文件列表。变量用 \verb|set| 命令来定义，使用 \verb|${}| 来引用：
+\begin{minted}{cmake}
+set(SOURCES a.cc b.cc c.cc)
+add_library(mylib ${SOURCES})
+\end{minted}
+这样能够省去不少重复的代码。
+
+上面的这个变量是一个列表。除了列表，CMake还支持字符串、布尔值、路径等类型的变量。变量的作用域是局部的，只有在当前目录及其子目录中可见。
+
+CMake的变量分两种：一种就是上面这样的普通变量，用户不能通过修改构建说明文件以外的手段修改它们；另一种是缓存变量，它们可以通过命令行参数，传递给CMake，从而影响构建过程。缓存变量的定义是用 \verb|set| 命令加上 \verb|CACHE| 关键字，或使用 \verb|option| 命令。缓存变量的作用域是全局的，所有的目录都可以访问它们。
+\begin{minted}{cmake}
+option(USE_MYLIB "Use mylib" ON) # 定义一个缓存变量
+set(MYLIB_PATH "/path/to/mylib" CACHE PATH "Path to mylib") # 定义一个缓存变量
+
+if(USE_MYLIB)
+    # ...
+endif()
+\end{minted}
+在构建中，我们可以通过命令行参数来修改缓存变量的值：
+\begin{minted}{bash}
+cmake -DUSE_MYLIB=OFF ..
+cmake -DMYLIB_PATH="/new/path/to/mylib" ..
+\end{minted}
+
+\paragraph{条件判断} CMake支持条件判断语句 \verb|if|，可以根据不同的条件来执行不同的构建操作。条件判断语句的语法如下：
+\begin{minted}{cmake}
+if(CONDITION)
+    # 条件为真时执行的操作
+elseif(OTHER_CONDITION)
+    # 其他条件为真时执行的操作
+else()
+    # 条件都不为真时执行的操作
+endif()
+\end{minted}
+这里必须使用 \verb|endif()| 来结束条件判断语句。条件判断语句可以嵌套使用，也可以使用逻辑运算符 \verb|AND|、\verb|OR|、\verb|NOT| 来组合多个条件。此外，还有一些其他的算符：
+\begin{itemize}
+    \item \verb|EQUAL|、 \verb|LESS|、\verb|GREATER|：比较两个数值的大小。
+    \item \verb|EXIST|：判断一个文件或目录是否存在。
+    \item \verb|DEFINED|：判断一个变量是否被定义。
+    \item \verb|COMMAND|：判断后面的命令是否存在并能执行。
+\end{itemize}
+
+\paragraph{执行外部命令} CMake使用 \verb|execute_process| 命令来执行外部命令，来完成一些构建前或构建后的操作。，并获取其输出：
+\begin{minted}{cmake}
+execute_process(COMMAND git rev-parse --short HEAD OUTPUT_VARIABLE GIT_HASH)
+message(STATUS "Current git hash: ${GIT_HASH}")
+\end{minted}
+一次可以同时执行许多命令，这些命令是进程级别并行的。
+
+\paragraph{输出信息到控制台上} 为了方便调试，CMake提供了 \verb|message| 命令来输出信息到控制台上。它有四种类型：
+\begin{itemize}
+    \item \verb|STATUS|：普通信息，输出到控制台上。
+    \item \verb|WARNING|：警告信息，输出到控制台上。
+    \item \verb|AUTHOR_WARNING|：作者警告信息，输出到控制台上。
+    \item \verb|FATAL_ERROR|：致命错误信息，输出到控制台上，并终止构建过程。
+\end{itemize}
+\begin{minted}{cmake}
+message(STATUS "This is a status message") # 输出状态信息
+message(WARNING "This is a warning message") # 输出警告信息
+message(AUTHOR_WARNING "This is an error message") # 输出错误信息
+message(FATAL_ERROR "This is a fatal error message") # 输出致命错误信息并终止构建
+\end{minted}
+
+\paragraph{调用外部库} CMake可以使用 \verb|find_package| 命令来查找外部库，并将其包含到构建过程中，比如经典的 \verb|Boost| 库：
+\begin{minted}{cmake}
+find_package(Boost 1.71 REQUIRED COMPONENTS filesystem system) # 查找Boost库，要求版本不低于1.71，并且必须包含filesystem和system组件
+if(Boost_FOUND)
+    include_directories(${Boost_INCLUDE_DIRS}) # 包含Boost库的头文件目录
+    target_link_libraries(my_target ${Boost_LIBRARIES}) # 链接Boost库
+else()
+    message(FATAL_ERROR "Boost library not found") # 如果没有找到Boost库，则输出错误信息并终止构建
+endif()
+\end{minted}
+如果这个库没有安装，则需要当场下载。此时需要引入 \verb|FetchContent| 模块：
+\begin{minted}{cmake}
+include(FetchContent) # 引入FetchContent模块
+FetchContent_Declare(googletest # 创建下载任务
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG release-1.11.0
+)
+FetchContent_MakeAvailable(googletest) # 下载并编译
+\end{minted}
+这样构建的好处是会不需要预先安装库，使得构建过程更加灵活和便捷。缺点：首次编译时需要联网下载，会比较慢。
+
+除此之外，CMake还支持其他的包管理器，比如 \verb|vcpkg|、\verb|Conan| 等。它们可以帮助我们更方便地管理依赖库，自动下载和安装所需的库，并生成相应的构建文件：
+\begin{minted}{bash}
+vcpkg install boost-filesystem boost-system
+cmake -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake .. # 使用vcpkg的工具链文件
+\end{minted}
+例如这个命令就会安装 \verb|Boost| 库的 \verb|filesystem| 和 \verb|system| 组件，并在构建时使用 \verb|vcpkg| 的工具链文件将库链接到当前项目，以供CMake使用。
+
+\paragraph{安装} 
+
+CMake可以使用 \verb|install| 命令来将构建好的文件安装到指定的目录中。可被安装的内容包括可执行文件、库、头文件或目录等。
+\begin{minted}{cmake}
+install(TARGETS foo EXPORT fooTargets # 安装目标foo，并导出fooTargets
+    RUNTIME DESTINATION bin # 安装可执行文件到bin目录
+    LIBRARY DESTINATION lib # 安装动态库到lib目录
+    ARCHIVE DESTINATION lib # 安装静态库到lib目录
+)
+install(FILES foo.h DESTINATION include) # 安装头文件到include目录
+install(DIRECTORY include/ DESTINATION include) # 安装目录到include目录
+\end{minted}
+被导出（\verb|EXPORT|）的目标可以被其他项目使用。安装的路径可以是绝对路径，也可以是相对路径，相对路径是相对于CMake的安装前缀（\verb|CMAKE_INSTALL_PREFIX|）的。
+
+\paragraph{打包} 这个功能是专门给Linux的包管理器用的。CMake可以将构建好的文件打包成 \verb|.deb|、\verb|.rpm| 等格式的安装包，方便用户安装和卸载。可以使用 \verb|cpack| 命令来生成安装包，这需要在CMake中指定打包的配置文件 \verb|CPackConfig.cmake|，内容如下：
+\begin{minted}{cmake}
+set(CPACK_GENERATOR "DEB;RPM") # 指定打包格式为deb和rpm
+set(CPACK_PACKAGE_NAME "myproject") # 指定包名为myproject
+set(CPACK_PACKAGE_VERSION "1.0.0") # 指定包版本为1.0.0
+\end{minted}
+然后在构建目录下运行 \verb|cpack| 命令，就会生成相应的安装包。用户可以使用包管理器安装软件包，也可以分发这些包。
+
+\subsection{交叉编译工具链}
+
+交叉编译，指的是在一个平台上编译出另一个平台的可执行文件，比如在 \verb|x86_64| CPU上的Windows系统上编译出 \verb|arm64| CPU上的Linux系统的可执行文件。CMake需要一个工具链文件，来指定我们使用什么交叉编译器、什么系统、什么架构等信息。工具链文件的内容如下：
+\begin{minted}{cmake}
+set(CMAKE_SYSTEM_NAME Linux) # 指定目标系统为Linux
+set(CMAKE_SYSTEM_PROCESSOR arm64) # 指定目标处理器为arm64
+set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc) # 指定C编译器
+set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++) # 指定C++编译器
+set(CMAKE_FIND_ROOT_PATH /path/to/sysroot) # 指定交叉编译的根路径
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER) # 不在根路径下查找程序
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY) # 只在根路径下查找库
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY) # 只在根路径下查找头文件
+\end{minted}
+之后编译，CMake会使用工具链文件中指定的编译器和路径来编译代码。编译出的文件就可以直接被拷贝到目标平台上运行，而不需要在目标平台上进行编译。
+
+\subsection{常见问题与提示} 
+
+CMake纵然强大，但也有一些常见的问题：
+\begin{itemize}
+    \item 缓存残留：CMake会在构建目录中生成一个 \verb|CMakeCache.txt| 文件，记录一些缓存变量和构建信息。如果我们修改了构建说明文件或者切换了编译器，可能会导致缓存不一致，从而引发各种奇怪的问题。此时，我们可以删除 \verb|CMakeCache.txt| 文件，或者直接删除整个构建目录，然后重新运行 \verb|cmake| 命令。
+    \item 找不到头/库文件：检查对应的 \verb|include| 目录是否正确。如果对，检查作用域是否被错设成了 \verb|PRIVATE|，导致下游目标无法链接到它。
+    \item 找不到dll：这是Windows平台上独有的错误。这时候，需要检查dll是否在PATH中，或者是否在可执行文件所在目录中。
+\end{itemize}
+
+以上内容仅仅是给CMake的一个概览。虽然可以让同学们理解CMake的基本用法，但要深入使用CMake，还是需要阅读官方文档和相关教程。毕竟CMake的命令非常多（就一个 \verb|execute_process| 命令就有几十个参数），而且每个命令都有很多选项和用法。有兴趣的读者可以更进一步的阅读 \url{https://cmake.org/cmake/help/latest/guide/tutorial/}，这是CMake官方的说明文档；也可以阅读这本书：\textsc{Professional CMake: A Practical Guide}，这是一本非常好的CMake教程。
+
+\section{XMake}
+
+虽然CMake已经很好了，但语法对于部分人而言还是有些复杂，有点像“外星语”。而XMake现代得多，使用Lua脚本（而非CMake特有的脚本），更容易上手。此外，XMake将CMake的许多步骤——configure、generate、build——压缩成了一步，且自带包管理，这使得XMake在小型项目中非常方便。但它在大项目中非常乏力，CMake是事实标准的地位仍然无可撼动。
+
+\begin{remark}{}
+    非常不建议使用XMake来构建C项目，尤其是在Windows平台上：它会调用C++编译器来编译C代码，导致错误。
+\end{remark}
+
+\subsection{最小运行实例}
+
+XMake的构建说明文件是 \verb|xmake.lua|。它的过程和CMake是反过来的：CMake只是帮我们进行构建，代码结构什么的都需要我们来写；而XMake则一开始就可以帮我们创建一个项目的目录结构，并生成一个 \verb|xmake.lua| 文件。我们可以直接在这个文件中写构建规则。
+
+运行这个命令看看模板：
+\begin{minted}{bash}
+xmake create -l c++ hello # 软件项目hello
+xmake create -l c++ -t static hello_lib # 静态库项目hello_lib
+\end{minted}
+
+对于软件项目，它给出的构建规则如下：
+\begin{minted}{lua}
+add_rules("mode.debug", "mode.release")
+
+target("hello")
+    set_kind("binary")
+    add_files("src/*.cpp")
+\end{minted}
+
+对于库，它给出的构建规则如下：
+\begin{minted}{lua}
+add_rules("mode.debug", "mode.release")
+
+target("foo")
+    set_kind("static")
+    add_files("src/foo.cpp")
+
+target("hello_lib")
+    set_kind("binary")
+    add_deps("foo")
+    add_files("src/main.cpp")
+\end{minted}
+
+如果希望构建（并运行）这玩意，需要进入对应的目录，并构建（运行）：
+\begin{minted}{bash}
+cd hello
+xmake # 构建
+xmake run # 运行
+xmake run -d # 运行并调试
+\end{minted}
+
+\subsection{XMake的使用概要}
+
+\paragraph{基本说明}
+
+如果理解CMake，那么这段XMake的Lua就不难理解了。其语法相当简单，和CMake的思路也如出一辙。首先，需要声明目标，即 \verb|target|；然后在这个目标之下（通过缩进实现）声明目标的类型和对应的源文件；如果有依赖的库，则需要声明依赖关系。最后，XMake会根据这些规则来构建目标。
+
+一个稍大一点的项目的 \verb|xmake.lua| 文件如下：
+
+\begin{minted}{lua}
+-- xmake.lua
+set_project("hello")
+set_version("1.0.0")
+add_rules("mode.debug", "mode.release")   -- 自动生成 debug/release 配置
+
+target("app")                             -- 一个目标
+    set_kind("binary")                    -- 可执行文件
+    add_files("src/*.cpp")                -- 通配符
+    set_languages("c++20")                -- 标准
+    add_packages("fmt")                   -- 依赖 fmt 头文件+库
+\end{minted}
+其实也不难理解，这里仅仅是加上了一些依赖、版本、标准等信息，很容易理解。
+
+XMake会自动根据宿主处理编译过程，并且会自动根据宿主处理器架构、操作系统、编译器等信息，来选择合适的编译器和编译选项。
+
+\paragraph{目标和作用域}
+
+XMake的构建也是基于目标的，即 \verb|target|。每一个 \verb|target| 都有自己的属性和依赖关系。XMake的目标类型有：
+\begin{itemize}
+    \item \verb|binary|：可执行文件。
+    \item \verb|static|：静态链接库。
+    \item \verb|shared|：动态链接库。
+    \item \verb|headeronly|：头文件库。
+    \item \verb|phony|：虚拟目标，不生成任何文件，只用于组织其他目标。
+\end{itemize}
+
+XMake目标的作用域和CMake的作用域类似但有些微的不同。
+\begin{minted}{lua}
+add_deps("foo", {public = true}) -- 公共依赖
+add_deps("foo", {public = false}) -- 私有依赖
+\end{minted}
+这里只有两种。XMake的 \verb|public = true| 相当于CMake的 \verb|PUBLIC|，而 \verb|public = false| 相当于CMake的 \verb|PRIVATE|。XMake没有 \verb|INTERFACE|，因为它不区分接口和实现。
+
+\paragraph{规则} XMake的“规则”指的是一些预先定义的构建规则，通过 \verb|add_rules| 来添加。规则可以是内置的，也可以是自定义的。内置规则，我们只需要记住两个：\verb|mode.debug|、\verb|mode.release|，分别对应的是调试模式和发布模式。自定义规则，我们可以通过 \verb|rule| 来定义，然后通过 \verb|add_rules| 来添加到目标中：
+\begin{minted}{lua}
+rule("embed")
+    set_extensions(".txt") -- 只处理 .txt 文件
+    on_build(function (target, sourcefile)
+        -- 将文本文件嵌入到目标中
+        os.cp(sourcefile, path.join(target:targetdir(), path.basename(sourcefile) .. ".bin"))
+    end)
+target("app")
+    set_kind("binary")
+    add_files("src/*.cpp")
+    add_rules("embed") -- 添加自定义规则
+\end{minted}
+这里的规则写法需要遵从Lua的函数写法。有兴趣的读者可以参考相关文档。
+
+\paragraph{调包} XMake自带包管理器，可以通过 \verb|add_requires| 来声明依赖的包，然后通过 \verb|add_packages| 来使用这些包。XMake会自动下载、编译和链接这些包。比如：
+\begin{minted}{lua}
+add_requires("fmt", "spdlog") -- 声明依赖的包
+target("app")
+    set_kind("binary")
+    add_files("src/*.cpp")
+    add_packages("fmt", "spdlog") -- 使用依赖的包
+\end{minted}
+XMake的官方仓库有着九百多个常用的库。第一次编译的时候，XMake会先查本地缓存有没有需要的包；如果没有，就自动下载预编译文件或者源码。
+
+\paragraph{交叉编译} XMake也支持交叉编译。我们可以通过 \verb|set_toolchains| 来指定交叉编译工具链，然后通过 \verb|set_arch| 来指定目标架构。比如：
+\begin{minted}{lua}
+set_toolchains("arm-linux-gnueabihf") -- 指定交叉编译工具链
+set_arch("arm") -- 指定目标架构为arm
+\end{minted}
+实际上，XMake的“跨平台”是它的最大卖点之一。它的交叉编译非常简单，这也是它的底气。但只要它在Windows上用C++编译器来编译C这个毛病不改，它就永远称不上是真正的跨平台构建工具。
+
+\paragraph{打包} XMake的打包功能是通过 \verb|xmake package| 命令来实现的。它会根据 \verb|xmake.lua| 中的配置，将构建好的文件打包成一个压缩包，方便分发和安装。我们可以通过 \verb|set_package| 来指定打包的配置，比如：
+\begin{minted}{lua}
+set_package("myproject") -- 指定包名为myproject
+set_package_version("1.0.0") -- 指定包版本为1.00
+set_package_description("My awesome project") -- 指定包描述
+set_package_license("MIT") -- 指定包许可证
+set_package_url("https://github.com/myproject") -- 指定包的URL
+\end{minted}
+
+随后，运行 \verb|xmake package| 命令，就会生成一个压缩包，里面包含了构建好的文件和相关的元数据。用户可以通过解压缩这个压缩包来安装软件，也可以通过 \verb|xmake install| 命令来安装软件。
+
+\section[Meson]{Meson\protect\footnote{本章作者周乾康。}}
+
+Meson是一个开源的构建系统，主要目标是尽可能地提高开发者的生产力。它力求快速、易用，并提供最现代化的软件构建工具。Meson的设计哲学是“不挡路”（Don't get in your way），致力于让构建过程尽可能简单、快速和可靠。
+
+与使用自定义脚本语言的CMake或使用Lua的XMake不同，Meson使用一种专门设计的、非图灵完备的领域特定语言（DSL）。这种设计的目的是为了确保构建定义的简洁性、可读性和可预测性，避免在构建脚本中出现过于复杂的逻辑。Meson的构建定义文件通常命名为 \verb|meson.build|。
+
+Meson本身并不直接编译代码，而是作为一个元构建系统生成另一套构建系统（Ninja或Visual Studio等）的项目文件，它的默认后端是Ninja。得益于其出色的设计和性能，Meson在开源社区获得了广泛的认可，许多大型项目，如GNOME（包括较底层的GLib、GTK以及各应用程序）、GStreamer、Systemd、Mesa等，都已采用Meson作为其官方构建系统。
+
+\subsection{最小运行实例}
+Meson强制要求“外源构建”（out-of-source builds），即构建生成的文件必须位于一个与源码目录分开的独立目录中，保持源码树的整洁。
+
+假设我们有一个简单的 \verb|main.c| 文件。在同级目录下，我们创建一个 \verb|meson.build| 文件：
+\begin{minted}{text}
+# meson.build
+project('hello_meson', ['c'],
+  version : '0.1',
+  default_options : ['c_std=c11'])
+
+executable('hello', 'main.c')
+\end{minted}
+
+然后，我们按以下步骤进行构建：
+\begin{minted}{bash}
+# 配置项目，创建构建目录 builddir
+# 可以通过`--buildtype` 来设置构建类型
+meson setup builddir --buildtype=debugoptimized
+
+# 编译
+# -C 指定构建目录
+meson compile -C builddir
+
+# 运行
+./builddir/hello
+\end{minted}
+
+整个过程清晰明了。 \verb|meson setup| 步骤只会执行一次（除非构建脚本或环境变化），后续的修改只需要运行 \verb|meson compile -C builddir| 。其中， \verb|--buildtype| 选项可以指定构建类型，如 \verb|debug| 为调试模式， \verb|release| 为发布模式， \verb|debugoptimized| 为调试优化模式， \verb|plain| 为纯粹的编译模式（使用环境变量中的构建参数）， \verb|minsize| 为最小化大小优化模式， \verb|custom| 为自定义模式。对于调试模式，Meson会自动设置编译器相关选项，添加调试符号。
+
+\subsection{项目和目标}
+每个Meson项目的根目录都必须有一个 \verb|meson.build| 文件，并且第一条命令必须是 \verb|project()| 。
+\begin{minted}{text}
+project('my_project', ['c', 'cpp']) # 项目名，使用的语言
+\end{minted}
+
+目标（Target）是你想要构建的东西，可以是可执行文件或库等。
+\begin{minted}{text}
+# 创建一个可执行文件
+exe = executable('my_app', 'main.c', 'utils.c')
+
+# 创建一个静态库
+lib = static_library('my_lib', 'lib.c', 'helper.c')
+
+# 创建一个共享库
+shared_lib = shared_library('my_shared_lib', 'shared.cpp')
+\end{minted}
+
+Meson中的变量默认是不可变的，这有助于写出更可预测的构建脚本。上面代码中的 \verb|exe| 和 \verb|lib| 就是持有目标对象引用的变量。
+
+\subsection{依赖项处理}
+Meson的依赖项处理是其一大亮点。它提供了一个统一的 \verb|dependency()| 函数来查找外部依赖。
+\begin{minted}{text}
+# 查找 fmt 库，如果找不到则构建失败
+fmt_dep = dependency('fmt', required: true)
+
+executable('app', 'main.cpp',
+  dependencies : [fmt_dep]) # 将依赖项传递给目标
+\end{minted}
+
+\verb|dependency()|  函数会按顺序尝试多种方法来寻找依赖，包括（但不限于）：
+\begin{itemize}
+    \item \textbf{pkg-config}：这是在Linux和类UNIX系统上查找库的首选方式。
+    \item \textbf{CMake}：Meson可以调用 \verb|find_package| 来查找CMake包。
+    \item \textbf{内置查找器}：对于一些常用库（如Zlib、Threads），Meson有自己的查找逻辑。
+\end{itemize}
+
+\subsection{子项目与Wrap系统}
+Meson拥有一个名为Wrap的内置依赖包管理器，类似于CMake的 \verb|FetchContent| 。当系统上没有安装某个依赖时，Meson可以通过Wrap系统从网上下载并构建它。
+
+要使用它，你需要在项目根目录下创建一个 \verb|subprojects| 目录，并在其中放置一个 \verb|.wrap| 文件。例如 \verb|subprojects/fmt.wrap|：
+\begin{minted}{toml}
+[wrap-file]
+directory = fmt-10.2.1
+source_url = https://github.com/fmtlib/fmt/releases/download/10.2.1/fmt-10.2.1.zip
+source_hash = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+\end{minted}
+然后，在 \verb|meson.build| 中，你可以像查找系统库一样查找它：
+\begin{minted}{text}
+# Meson会先尝试系统查找，失败后会自动在subprojects目录中寻找fmt
+# fallback的第二个参数是子项目中的依赖变量名
+fmt_dep = dependency('fmt', fallback: ['fmt', 'fmt_dep'])
+\end{minted}
+
+\subsection{选项和配置}
+你可以使用 \verb|option()| 函数为你的项目定义可配置的选项。
+\begin{minted}{text}
+option('use_feature_x', type : 'boolean', value : true, description : 'Enable feature X')
+\end{minted}
+用户在配置时可以通过 \verb|-D| 参数来修改这些选项的值：
+\begin{minted}{bash}
+meson setup builddir -Duse_feature_x=false
+\end{minted}
+要查看或修改一个已经配置好的构建目录的选项，可以使用 \verb|meson configure| ：
+\begin{minted}{bash}
+meson configure builddir                # 查看所有选项
+meson configure builddir -Duse_feature_x=true # 修改选项
+\end{minted}
+
+\subsection{交叉编译}
+交叉编译是Meson的一等公民。所有与交叉编译相关的设置都集中在一个单独的“交叉文件”（ \verb|cross file| ）中。一个简单的交叉编译文件示例如下：
+\begin{minted}{toml}
+[binaries]
+c = 'loongarch64-linux-gnu-gcc'
+cpp = 'loongarch64-linux-gnu-g++'
+ar = 'loongarch64-linux-gnu-ar'
+strip = 'loongarch64-linux-gnu-strip'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'loongarch64'
+cpu = 'loongarch64'
+endian = 'little'
+\end{minted}
+
+在配置时使用 \verb|--cross-file| 参数指定此文件：
+\begin{minted}{bash}
+meson setup build_loongarch64 --cross-file loongarch64-linux-gnu.txt
+meson compile -C build_loongarch64
+\end{minted}
+Meson会处理好所有细节，确保使用正确的编译器和库路径。
+
+\subsection{特点与比较}
+\begin{itemize}
+    \item \textbf{语法和设计哲学}：Meson的语法是声明式的、非图灵完备的DSL，虽然这造成了一些限制，但这也使得构建脚本非常简洁且易于分析。它强制实施了许多最佳实践（如外源构建）。
+    \item \textbf{性能}：Meson的配置阶段通常非常快。由于其默认后端是Ninja，编译速度也极具竞争力。
+    \item \textbf{易用性}：对于新项目或初学者来说，Meson和XMake的上手难度通常低于CMake。Meson的错误提示非常友好，文档也极为出色。
+\end{itemize}
+
+\subsection{技巧与提示}
+\begin{itemize}
+    \item \textbf{修改配置}：有时候因为Meson版本升级或者我们自己需要修改配置中的内容，需要重新配置项目构建目录。此时不必手动删除 \verb|builddir| 目录来重新配置，使用 \verb|meson setup --reconfigure builddir| 。
+    \item \textbf{调试}：Meson的输出信息非常清晰。如果遇到问题，仔细阅读它的错误提示与引导通常就能解决问题。
+    \item \textbf{官方文档}：Meson的官方文档\url{https://mesonbuild.com/}是学习和解决问题的极佳资源，内容详尽且组织良好。
+\end{itemize}
+
+Meson提供了一种不同的构建体验。如果你正在开始一个新的开源项目，Meson是一个非常值得考虑的优秀选择。

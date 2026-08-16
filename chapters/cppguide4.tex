@@ -777,3 +777,150 @@ public:
 }; // 之后就用它来RAII的包装信号量，保证每次 acquire() 都有对应的 release()，从而避免逻辑死锁。
 \end{minted}
 极端情况下，也可以用超时重置机制。但这是最后的手段。
+
+\section{无锁数据结构}
+
+刚刚我们写的线程池，每次对 \verb|tasks| 队列的访问都需要加锁。加锁和解锁的开销不算小，因为有CPU的上下文切换开销。那么有没有一种办法，能彻底规避锁的开销？这就是无锁数据结构。
+
+\subsection{无锁数据结构的原理}
+
+无锁数据结构的核心就是\textbf{原子操作}，因为原子操作是CPU提供的最小粒度的同步原语，它可以保证在多线程环境下对共享数据的访问不会发生竞态条件。
+
+以无锁队列为例，其工作逻辑是这样的：
+\begin{itemize}
+    \item 读快照：读当前的队列头和队列尾的指针，形成一个快照；
+    \item 计算新值：根据快照计算出新的队列头和队列尾的指针；
+    \item 原子试探：使用CAS（Compare-And-Swap）操作尝试将队列头和队列尾的指针更新为新的值。
+    \item 重试循环：如果CAS操作失败，说明有其他线程修改了队列头和队列尾的指针，那么就重新读快照，计算新值，再尝试原子更新，直到成功为止。这会在一个循环（“自旋”）中不断尝试，线程不会休眠，直到成功为止。
+\end{itemize}
+
+因此，无锁队列的工作逻辑是这样的：
+\begin{minted}{cpp}
+#include <atomic>
+template<typename T>
+class LockFreeQueue {
+    struct Node {
+        T data;
+        std::atomic<Node*> next;
+        Node(T val) : data(val), next(nullptr) {}
+    };
+    std::atomic<Node*> head;
+    std::atomic<Node*> tail;
+public:
+    LockFreeQueue() {
+        Node* dummy = new Node(T()); // 创建一个哑节点
+        head.store(dummy);
+        tail.store(dummy);
+    }
+    ~LockFreeQueue() {
+        while (Node* node = head.load()) {
+            head.store(node->next.load());
+            delete node;
+        }
+    }
+    void enqueue(T val) {
+        Node* newNode = new Node(val);
+        Node* oldTail;
+        do {
+            oldTail = tail.load();
+            Node* next = oldTail->next.load();
+            if (next == nullptr) { // 如果尾节点的 next 为空，说明可以插入
+                if (oldTail->next.compare_exchange_weak(next, newNode)) {
+                    break; // 插入成功，跳出循环
+                }
+            } else { // 尾节点的 next 不为空，说明有其他线程在插入，尝试移动尾指针
+                tail.compare_exchange_weak(oldTail, next);
+            }
+        } while (true);
+        tail.compare_exchange_weak(oldTail, newNode); // 尝试移动尾指针到新节点
+    }
+    bool dequeue(T& val) {
+        Node* oldHead;
+        do {
+            oldHead = head.load();
+            Node* oldTail = tail.load();
+            Node* next = oldHead->next.load();
+            if (oldHead == oldTail) { // 队列为空或只有一个节点
+                if (next == nullptr) {
+                    return false; // 队列为空
+                }
+                tail.compare_exchange_weak(oldTail, next); // 尝试移动尾指针
+            } else {
+                val = next->data; // 获取下一个节点的数据
+                if (head.compare_exchange_weak(oldHead, next)) {
+                    delete oldHead; // 删除旧的头节点
+                    return true; // 出队成功
+                }
+            }
+        } while (true);
+    }
+};
+
+LockFreeQueue<std::function<void()>> tasks; // 无锁队列
+
+void DenseTask(int a) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::cout << "Task " << a << " done." << std::endl;
+}
+
+for (int i = 0; i < 8; ++i) {
+    tasks.enqueue([i]() { DenseTask(i); }); // 提交任务到无锁队列
+}
+\end{minted}
+
+无锁（自旋锁）和互斥锁（阻塞锁）的区别见表~\cref{tab:lock}。
+
+\begin{table}
+    \centering
+    \begin{tabular}{l|p{6cm}p{6cm}}
+        \toprule
+        & 互斥锁 & 自旋锁 \\
+        \midrule
+        锁的本质 & 阻塞其他线程 & 原子操作 \\
+        线程挂起 & 拿不到锁就睡、让出CPU（消极等待） & 拿不到锁就自旋，霸占CPU（积极等待）\\
+        延迟 & 有上下文切换（微秒级） & 几乎没有 \\
+        死锁风险 & 有 & 没有锁的持有关系，不存在死锁 \\
+        活锁风险 & 不存在 & 两个线程可能互相谦让而导致长期失败 \\
+        内存回收 & 容易（析构时释放锁） & 复杂，需要保证没有线程在自旋时访问已释放的内存 \\
+        适用场景 & 绝大多数情况 & 极致性能，或绝对不能休眠的中断上下文和内核态 \\
+        \bottomrule
+    \end{tabular}
+    \caption{互斥锁和自旋锁的区别}
+    \label{tab:lock}
+\end{table}
+
+\subsection{无锁数据结构的致命问题} 
+
+虽然无锁数据结构比正常的有锁数据结构更快，但它们也有一些致命的问题，主要包括ABA问题、内存回收问题和活锁问题。这和有锁数据结构不同：有锁数据结构只需要维护锁的持有关系不乱，且防止OoO对多线程的影响就可以了，但无锁数据结构的这些问题解决难度更大。
+
+\paragraph{ABA问题} ABA问题的现象是这样的：线程甲读取一个栈顶为A，准备把A换成B。正在计算B的时候，线程乙把A给删了，又新建了一个地址和A相同的C压回去。线程甲回来时，通过CAS判断A和C是一个东西，于是把指针改成了B，但这个时候 \verb|B->next| 是已经被删除的旧A，于是导致崩溃。
+
+这个问题的核心原因是：线程分不清A和C是不是同一个东西。为了解决这个问题，必须引入\textbf{带版本号的指针}，每次修改的时候都让版本号变化。这样，即使地址相同，版本号变了也能识别出来。
+
+\paragraph{内存回收问题} 这个问题的现象是这样的：线程甲读取某节点的数据，线程乙却CAS成功了，把这个节点删除了并释放了内存。线程甲继续访问这个节点的数据，结果它的指针就成了野指针，引发未定义行为。
+
+这个问题的核心原因是线程不知道有没有其他线程在访问现有的节点。解决方法有两种：要么引入“风险指针”，让其他的线程知道有东西在读这个，不让它删；要么引入基于时代的回收策略，等所有线程都进入下一个“时代”后再删除那些该删除的节点。
+
+\paragraph{活锁} 活锁是CAS中最常见的问题。当两个线程都在自旋、读取同一个变量时，它们可能会互相干扰，对方的修改总是覆盖自己的修改，导致永远无法完成自己的目标，即互相谦让导致的长期失败。如果说死锁是两辆车在窄巷相遇、谁也不愿倒车，那活锁就是两辆车都极有礼貌的倒出巷子再回来，结果在巷子中又碰面了，但两位司机都有点傻，不会等到另一辆车从巷子中出来后再继续行驶，如此形成无限循环。由此可见，这是自旋锁特有的风险，互斥锁不可能出现这种情况，因为互斥锁是阻塞的，拿不到锁就睡觉、让出CPU。
+
+活锁的杀伤力比死锁大得多。死锁可以通过加锁的顺序规避，即使在编程中未能规避，发生死锁时CPU立即停摆，程序卡住，监控系统会告警，运维人员可以迅速介入，也容易察觉发生死锁的位置。但活锁会伪装：不仅很难在代码中规避，而且发生时CPU仍然在疯狂自旋，QPS（每秒查询率）也非常高，监控系统也不会告警，唯一的线索是业务数据库中的关键数据就是不更新，不容易意识到是活锁的问题，而且排查时也很难定位到问题的根源。
+
+解决活锁有三种手段：
+\begin{description}
+    \item[引入随机退避机制] 线程失败后，随机休眠几个微秒或自旋几次后再尝试，错开“撞车”时间。这是Ethernet的CSMA/CD协议的核心思想。
+    \item[指数退避] 线程失败后，休眠一定时间，如果还失败则休眠更长时间，直到成功为止。这个做法类似于TCP的拥塞控制算法，也是工业级别无锁队列的常用做法。
+    \item[让出时间片] 如果是在同一个核心上超线程竞争，可以让出时间片，给其他线程机会。
+\end{description}
+
+实际情况中，活锁的发生概率和严重程度取决于线程数、CPU核心数、线程调度策略、线程优先级等因素。一般来说，线程数越多、CPU核心数越少、线程调度策略越公平、线程优先级越接近，活锁的发生概率就越高，严重程度也就越大。
+
+\subsection{无锁数据结构的应用}
+
+无锁数据结构虽然够快，但我非常不建议使用无锁的数据结构，尤其是手搓。这是因为无锁数据结构非常容易出错，而且一旦出错，排查起来非常困难。除非你是一个非常有经验的并发程序员，否则不要轻易尝试，而是改用有锁数据结构代替。因为有锁数据结构对大多数场景而言确实已经足够快，且代码正确性容易证明；此外，无锁带来的收益在IO密集型场景下微乎其微。
+
+真的硬要用，那建议使用成熟的无锁数据结构库，包括：
+\begin{itemize}
+    \item \verb|moodycamel::ConcurrentQueue|：高吞吐队列，工业级优化。
+    \item \verb|boost::lockfree::queue|：Boost库提供的简单栈和队列。
+\end{itemize}
+最终依然是那句话：先保证对，再保证快；能用锁解决就不要玩无锁，要用就用现成的，不要自己手搓。
