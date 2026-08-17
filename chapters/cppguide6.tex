@@ -1,0 +1,114 @@
+\chapter[C++的包管理和常用包简介]{C++的包管理和常用包简介\protect\footnote{本节作者臧炫懿，周乾康修改。}} 
+
+C++由于没有官方的运行时，所以C++的包管理和依赖管理并不像Python、Java等语言那样有一个统一的标准。除了上一节提到的用CMake、XMake等来下载并管理包之外，C++还有一些常用的包管理工具和包仓库可以帮助开发者管理依赖，并与上述构建工具链深度集成，从而简化C++项目的依赖管理和构建过程。
+
+每一个包都有自己推荐的安装方式，建议同学们优先使用官方推荐的方式安装包。C++的上限极高，下限也极低，因此实际上许多包的质量是堪忧的，我们还是建议使用一些经过社区验证的包来辅助开发。
+
+\section{C++的包管理} 
+
+C++没有官方的运行时（Runtime）。这导致C++的ABI随着编译器、版本、编译选项而变化，导致二进制包必须严丝合缝。
+
+简单说来，C++装库主要任务有三项：找到头文件、找到库文件、让构建系统知道它们在哪。头文件指的是C++的头文件（\verb|.h|、\verb|.hpp|等），库文件指的是编译好的二进制文件（\verb|.so|、\verb|.dll|、\verb|.a|等）。由于二十多年来没有一个官方组织来统一C++的包管理、大家习惯自己编译，因此逐渐形成了两种互相不重叠的技术路线：要么手动装，要么利用包管理器。
+
+\subsection{手动装} 
+
+这是最原始的方式：要么从源代码编译，要么从二进制包安装。手动装的好处是可以完全控制安装的版本和配置，坏处是需要手动处理依赖关系和路径问题，并且容易出错。不过，其他的方式最终还是依赖于手动装的过程，只不过脏活累活有自动化工具帮你做了；另一方面，手动装包也是最通用的方式，在包管理器上没有找到包时，手动装包几乎是唯一的选择。
+
+\paragraph{单一头文件库} 以著名的结构化数据序列化库 \verb|nlohmann/json| 为例。它是一个单头文件库，只有一个 \verb|json.hpp| 文件。使用的时候，只需要将头文件放在项目目录下，通常是 \verb|third_party| 或者 \verb|vendor| 目录下，然后在代码中包含它即可：
+\begin{minted}{cpp}
+#include "third_party/json.hpp"
+\end{minted}
+并在CMake中添加头文件搜索路径：
+\begin{minted}{cmake}
+add_subdirectory(third_party)
+include_directories(my_project PRIVATE third_party)
+\end{minted}
+
+\paragraph{手动编译} 有的库需要编译才能使用，这是因为库太大了，或者需要根据不同的编译选项生成不同的二进制文件。以C++20之前承担起格式化数据任务的 \verb|fmt| 为例，我们首先要下载源代码，并编译之：
+\begin{minted}{bash}
+git clone https://github.com/fmtlib/fmt.git
+cmake -S fmt -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+cmake --build build --config Release
+sudo cmake --install build --prefix /usr/local
+\end{minted}
+然后在CMake中添加头文件搜索路径和库文件搜索路径：
+\begin{minted}{cmake}
+find_package(fmt REQUIRED)
+target_link_libraries(my_project PRIVATE fmt::fmt)
+\end{minted}
+
+\subsection{利用包管理器}
+
+包管理器实际上是一种自动化的手动装方式。它们通常会提供一个统一的命令行工具，来管理包的安装、卸载、更新等操作。许多包都可以使用这种方式安装，且包管理器通常会处理依赖关系和路径问题。
+
+\paragraph{系统级别包管理器} 对于特定的操作系统或开发环境，使用自带的包管理工具是安装C++库最直接的方式。比如在Linux上，使用 \verb|apt|、\verb|yum|、\verb|dnf| 等包管理器；在macOS上，使用 \verb|brew|；在Windows上，使用 \verb|vcpkg| 或者 \verb|choco|。这些工具通常会提供一个统一的命令行工具，来管理包的安装、卸载、更新等操作。
+
+安装后，这些库常常会放置在系统的标准路径下。构建系统会通过 \verb|find_package| 来轻易找到它们。
+
+这样装的优势有以下几点：
+\begin{itemize}
+    \item 一条命令即可完成安装，自动处理复杂的依赖关系。
+    \item 库文件和头文件被安装到标准位置，构建系统可以自动发现，无需手动配置路径。
+    \item 可以与其他系统软件一同通过包管理器进行更新和维护。
+    \item 发行版仓库中的库经过测试，通常与系统中的其他组件（如编译器）兼容性良好。
+\end{itemize}
+
+这样装的缺点也很明显：
+\begin{itemize}
+    \item 仓库中的库版本未必能满足所有需求。如果你的项目需要某个库的最新特性，或者依赖于一个非常特定的旧版本，某些包管理器可能无法满足需求。
+    \item 不同平台、不同发行版的包管理器命令和包名各不相同，往往需要手动核验与对应。
+    \item 不是所有的 C++ 库都被收录到了官方仓库中，尤其是那些比较小众或新兴的库。
+\end{itemize}
+
+\paragraph{vcpkg} vcpkg是微软开发的C++包管理器。我们建议在Windows使用这个包管理器，因为它可以很好地与Visual Studio集成。vcpkg的使用方式非常简单，首先应当安装vcpkg（过程略）。
+
+然后在项目中添加vcpkg的CMake配置：（你应当把示例路径替换为你自己安装vcpkg的实际路径）
+\begin{minted}{bash}
+    cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
+\end{minted}
+下一步声明依赖 \texttt{vcpkg.json} 文件：
+\begin{minted}{json}
+    {
+        "name": "demo",
+        "version": "0.1.0",
+        "dependencies": [
+            "fmt",
+            "nlohmann-json"
+        ]
+    }
+\end{minted}
+这样，在CMake构建文件的时候就会自动下载源码并编译出*.a或者*.so等文件，并且将它们放在build的相关目录下。
+
+vcpkg的好处是源码优先（可以切换triplet）、不和系统冲突；坏处是仅能支持CMake项目。
+
+\paragraph{Conan} Conan是一个跨平台的C++包管理器，支持多种构建系统，包括CMake、Make等。Conan的使用方式也很简单：
+\begin{minted}{bash}
+    pip install conan # 安装Conan
+    conan profile detect --force # 检测当前系统配置并生成配置文件
+\end{minted}
+然后在项目中添加Conan的配置文件（conanfile.txt）：
+\begin{minted}{text}
+    [requires]
+    fmt/9.0.0
+    nlohmann_json/3.11.2
+
+    [generators]
+    CMakeDeps
+    CMakeToolchain
+\end{minted}
+然后构建：
+\begin{minted}{bash}
+    conan install . --build=missing -s build_type=Release
+    cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake
+\end{minted}
+
+Conan的好处是支持多种构建系统和平台，包括make、meson、bazel等；二进制包仓库丰富；支持版本锁定等。但是缺点是conanfile和CMakeLists.txt文件需要手动维护和同步比较麻烦。
+
+\paragraph{conda} conda虽然是一个虚拟环境管理器，但它也能用于C++包管理：
+\begin{minted}{bash}
+    conda create -n myenv
+    conda activate myenv
+    conda install -c conda-forge fmt nlohmann_json
+\end{minted}
+
+\section{常用C++包简介}
